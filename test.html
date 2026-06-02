@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>QR Checkpoint Scanner</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, system-ui, sans-serif;
+      background: #0f1115; color: #e8eaed;
+    }
+    #status {
+      padding: 14px 16px; font-size: 17px; font-weight: 600;
+      text-align: center; transition: background .15s;
+      background: #1f6feb;
+    }
+    #status.ok    { background: #1a7f37; }
+    #status.err   { background: #b62324; }
+    #status.scan  { background: #1f6feb; }
+    #reader { width: 100%; max-width: 480px; margin: 0 auto; }
+    #log {
+      max-width: 480px; margin: 12px auto; padding: 0 16px;
+      font-size: 14px; line-height: 1.6;
+    }
+    #log div { padding: 6px 0; border-bottom: 1px solid #222; }
+    .t { color: #8b949e; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div id="status" class="scan">Starting camera…</div>
+  <div id="reader"></div>
+  <div id="log"></div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    // ─── CONFIG ────────────────────────────────────────────────
+    // Set this to EITHER your Apps Script /exec URL OR your n8n webhook URL.
+    const ENDPOINT = "https://script.google.com/macros/s/AKfycbwgaWMSwXK3Hs0QRF0n_isxa8EnX2dbz2ZvQ85vKUSTb-7iamF-ndLuaF2_m3Vu43rHLg/exec";
+    const TOKEN    = "change-this-secret";   // must match the token your endpoint checks
+    const SCANNER  = "jose";                 // who is operating the scanner (for the audit log)
+    const DEDUPE_MS = 3000;                  // ignore the same code if re-seen within 3s
+    // ───────────────────────────────────────────────────────────
+
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const seen = {};
+
+    function setStatus(msg, cls) {
+      statusEl.textContent = msg;
+      statusEl.className = cls || 'scan';
+    }
+
+    function beep() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 880; g.gain.value = 0.1;
+        o.start(); o.stop(ctx.currentTime + 0.12);
+      } catch (e) {}
+      if (navigator.vibrate) navigator.vibrate(150);
+    }
+
+    function logRow(code, ok) {
+      const t = new Date().toLocaleTimeString();
+      const row = document.createElement('div');
+      row.innerHTML = '<span class="t">' + t + '</span> — ' +
+        code + (ok ? ' ✓' : ' ✗ not sent');
+      logEl.prepend(row);
+    }
+
+    async function send(code) {
+      // no-cors avoids CORS preflight/redirect headaches with Apps Script & n8n.
+      // The row is written server-side; the browser just can't read the response,
+      // so success is reported optimistically. Verify writes in the sheet.
+      const body = JSON.stringify({ payload: code, token: TOKEN, scanner: SCANNER });
+      await fetch(ENDPOINT, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: body
+      });
+    }
+
+    async function onScan(code) {
+      const now = Date.now();
+      if (seen[code] && now - seen[code] < DEDUPE_MS) return;  // skip rapid repeats
+      seen[code] = now;
+      setStatus('Saving ' + code + '…', 'scan');
+      try {
+        await send(code);
+        beep();
+        setStatus('Saved ✓  ' + code, 'ok');
+        logRow(code, true);
+      } catch (e) {
+        setStatus('Send failed: ' + e.message, 'err');
+        logRow(code, false);
+      }
+    }
+
+    if (typeof Html5Qrcode === 'undefined') {
+      setStatus('Scanner library failed to load.', 'err');
+    } else {
+      const qr = new Html5Qrcode('reader');
+      qr.start({ facingMode: 'environment' }, { fps: 10, qrbox: 250 }, onScan)
+        .then(() => setStatus('Point at a QR code', 'scan'))
+        .catch(err => setStatus('Camera error: ' + err, 'err'));
+    }
+  </script>
+</body>
+</html>
